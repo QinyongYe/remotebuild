@@ -5,66 +5,101 @@ import (
 	. "code.google.com/p/go.crypto/ssh"
 	"io/ioutil"
 	"github.com/spf13/cobra"
+	"fmt"
+	"strings"
 )
 
 var view = "~/qye_unix_view0/"
-var projects = []string{"Common/Search/FacebookSearchProvider"}
-var machines = []string{"adric", "solaris-build1", "hpbuild1"}
+var projects string
+var machines string
 
 func main() {
 	var cmdBuild = &cobra.Command{
 		Use:   "build",
 		Short: "build projects",
 		Run: func(cmd *cobra.Command, args []string) {
-			login(run(buildCmd))
+			run(buildScripts)
 		},
 	}
+	cmdBuild.Flags().StringVarP(&projects, "projects", "p", "Common/Search/FacebookSearchProvider,Common/Search/FacebookSearchManager", "the prjects to build")
 
 	var cmdClean = &cobra.Command{
-		Use:   "echo",
+		Use:   "clean",
 		Short: "clean projects",
 		Run: func(cmd *cobra.Command, args []string) {
-			login(run(cleanCmd))
+			run(cleanScripts)
 		},
 	}
+	cmdClean.Flags().StringVarP(&projects, "projects", "p", "Common/Search/FacebookSearchProvider,Common/Search/FacebookSearchManager", "the prjects to build")
 
-	var rootCmd = &cobra.Command{Use: "app"}
-	rootCmd.AddCommand(cmdBuild, cmdClean)
+	var buildNum string
+	var cmdCopy = &cobra.Command{
+		Use:   "copy",
+		Short: "copy build",
+		Run: func(cmd *cobra.Command, args []string) {
+			for _, m := range strings.Split(machines, ",") {
+				login(m, genExecuteFunc(copyScripts(buildNum)))
+			}
+		},
+	}
+	cmdCopy.Flags().StringVarP(&buildNum, "buildnum", "n", "9.4.0000.0097", "the build to copy")
+
+	var rootCmd = &cobra.Command{Use: "remotebuild"}
+	rootCmd.PersistentFlags().StringVarP(&machines, "machines", "m", "adric,earth10,RHEL5U8-TS7", "the machines to connect")
+	rootCmd.AddCommand(cmdBuild, cmdClean, cmdCopy)
 	rootCmd.Execute()
 }
 
-func run(cb func(string) []string) func(*Client) {
+func genExecuteFunc(scripts []string) func(*Client) {
 	return func(c *Client) {
-		for _, p := range projects {
-			// Each ClientConn can support multiple interactive sessions,
-			// represented by a Session.
-			s, err := c.NewSession()
-			if err != nil {
-				panic("Failed to create session: " + err.Error())
-			}
-			defer s.Close()
-
-			s.Stdout = os.Stdout
-			var cmds = cb(p)
-			var cmd = ""
-			for _, v := range cmds {
-				cmd += v + ";"
-			}
-			s.Run(cmd)
+		// Each ClientConn can support multiple interactive sessions,
+		// represented by a Session.
+		s, err := c.NewSession()
+		if err != nil {
+			panic("Failed to create session: " + err.Error())
 		}
+		defer s.Close()
+
+		s.Stdout = os.Stdout
+		var cmd = ""
+		for _, v := range scripts {
+			cmd += v + ";"
+		}
+		fmt.Println("script: ", cmd)
+		s.Run(cmd)
 	}
 }
 
-var cleanCmd = func (project string) []string {
+
+var cleanScripts = func (project string) []string {
 	return []string{
+		// remove BuildControl.db, or it will complains in linux
+				"rm " + view + "BuildScripts/BuildControl/BuildControl.db -f",
 				"cd " + view + project, // cd project folder
 				view + "BuildScripts/one.pl -one -notest", // one.pl
 				"make -f Makefile`uname` clean", // make
 			}
 }
 
+var copyScripts = func (buildNum string) []string {
+	return []string{
+			"cd /user4/Builds/" + buildNum + "/DEBUG/BIN",
+			"perl copyto.pl " + view,
+	}
+}
 
-var buildCmd = func (project string) []string {
+var run = func(genScripts func(string) []string) {
+	for _, m := range strings.Split(machines, ",") {
+		fmt.Println("machine: ", m)
+		for _, p := range strings.Split(projects, ",") {
+			fmt.Println("project: ", p)
+			var scripts = genScripts(p)
+			login(m, genExecuteFunc(scripts))
+		}
+	}
+}
+
+var buildScripts = func (project string) []string {
 	return []string{
 		"cd " + view + project, // cd project folder
 		view + "BuildScripts/one.pl -one -notest", // one.pl
@@ -72,7 +107,7 @@ var buildCmd = func (project string) []string {
 	}
 }
 
-func login(cb func (*Client)) {
+func login(machine string, cb func (*Client)) {
 	// An SSH client is represented with a ClientConn. Currently only
 	// the "password" authentication method is supported.
 	//
@@ -96,7 +131,7 @@ func login(cb func (*Client)) {
 			PublicKeys(key),
 		},
 	}
-	client, err := Dial("tcp", "adric:22", config)
+	client, err := Dial("tcp", machine+":22", config)
 	if err != nil {
 		panic("Failed to dial: " + err.Error())
 	}
